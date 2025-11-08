@@ -3,13 +3,16 @@ pragma solidity ^0.8.13;
 
 import {Test} from "forge-std/Test.sol";
 import {StakingContract} from "../src/StakingContract.sol";
+import {UnsafeUpgrades} from "openzeppelin-foundry-upgrades/Upgrades.sol";
 import {MockERC20} from "../src/MockERC20.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {StakingContractV2} from "./mocks/StakingContractV2.sol";
 
 // Minimal token with no decimals() implementation to trigger the constructor catch branch
 contract NoDecimalsToken {
     // intentionally empty; no IERC20Metadata.decimals()
-}
+
+    }
 
 contract StakingContractTest is Test {
     // Actors
@@ -45,7 +48,16 @@ contract StakingContractTest is Test {
             assertTrue(ok);
         }
 
-        staking = new StakingContract(REWARD_RATE, MIN_STAKE, STAKE_PERIOD, address(token));
+        {
+            address implementation = address(new StakingContract());
+            address proxy = UnsafeUpgrades.deployUUPSProxy(
+                implementation,
+                abi.encodeCall(
+                    StakingContract.initialize, (REWARD_RATE, MIN_STAKE, STAKE_PERIOD, address(token), owner)
+                )
+            );
+            staking = StakingContract(proxy);
+        }
 
         // Pre-fund reward reserve to ensure claims succeed
         token.approve(address(staking), REWARD_FUND);
@@ -59,12 +71,12 @@ contract StakingContractTest is Test {
     }
 
     function rewardBalanceOf(address user) internal view returns (uint256) {
-        (,uint256 r,) = staking.stakes(user);
+        (, uint256 r,) = staking.stakes(user);
         return r;
     }
 
     function lastStakeTimeOf(address user) internal view returns (uint256) {
-        (,,uint256 t) = staking.stakes(user);
+        (,, uint256 t) = staking.stakes(user);
         return t;
     }
 
@@ -75,28 +87,46 @@ contract StakingContractTest is Test {
         assertEq(staking.rewardRate(), REWARD_RATE);
         assertEq(staking.minimumStakeAmount(), MIN_STAKE);
         assertEq(staking.stakingPeriod(), STAKE_PERIOD);
-        assertEq(address(staking.STAKING_TOKEN()), address(token));
+        assertEq(address(staking.stakingToken()), address(token));
         assertEq(staking.owner(), owner);
     }
 
     function test_Revert_Constructor_ZeroArgs() public {
+        address implementation = address(new StakingContract());
+
         vm.expectRevert(StakingContract.InvalidRewardRate.selector);
-        new StakingContract(0, MIN_STAKE, STAKE_PERIOD, address(token));
+        UnsafeUpgrades.deployUUPSProxy(
+            implementation,
+            abi.encodeCall(StakingContract.initialize, (0, MIN_STAKE, STAKE_PERIOD, address(token), owner))
+        );
 
         vm.expectRevert(StakingContract.AmountMustBePositive.selector);
-        new StakingContract(REWARD_RATE, 0, STAKE_PERIOD, address(token));
+        UnsafeUpgrades.deployUUPSProxy(
+            implementation,
+            abi.encodeCall(StakingContract.initialize, (REWARD_RATE, 0, STAKE_PERIOD, address(token), owner))
+        );
 
         vm.expectRevert(StakingContract.InvalidPeriod.selector);
-        new StakingContract(REWARD_RATE, MIN_STAKE, 0, address(token));
+        UnsafeUpgrades.deployUUPSProxy(
+            implementation,
+            abi.encodeCall(StakingContract.initialize, (REWARD_RATE, MIN_STAKE, 0, address(token), owner))
+        );
 
         vm.expectRevert(StakingContract.ZeroAddress.selector);
-        new StakingContract(REWARD_RATE, MIN_STAKE, STAKE_PERIOD, address(0));
+        UnsafeUpgrades.deployUUPSProxy(
+            implementation,
+            abi.encodeCall(StakingContract.initialize, (REWARD_RATE, MIN_STAKE, STAKE_PERIOD, address(0), owner))
+        );
     }
 
     function test_REWARD_SCALE_Fallback_WhenNoDecimals() public {
         address tokenAddr = address(new NoDecimalsToken());
-        StakingContract s = new StakingContract(1, 1, 1, tokenAddr);
-        assertEq(s.REWARD_SCALE(), 1e18);
+        address implementation = address(new StakingContract());
+        address proxy = UnsafeUpgrades.deployUUPSProxy(
+            implementation, abi.encodeCall(StakingContract.initialize, (1, 1, 1, tokenAddr, owner))
+        );
+        StakingContract s = StakingContract(proxy);
+        assertEq(s.rewardScale(), 1e18);
     }
 
     // ------------------------------------------------------
@@ -119,7 +149,7 @@ contract StakingContractTest is Test {
         vm.expectEmit(true, true, false, true, address(staking));
         emit StakingContract.Staked(user1, MIN_STAKE);
         staking.stake(MIN_STAKE);
-        
+
         // state change assertions to ensure stake is successful
         assertEq(stakeBalance(user1), MIN_STAKE);
         assertEq(staking.totalStaked(), MIN_STAKE);
@@ -158,11 +188,9 @@ contract StakingContractTest is Test {
 
         vm.warp(block.timestamp + STAKE_PERIOD);
 
-        vm.expectRevert(abi.encodeWithSelector(
-            StakingContract.InsufficientStakedBalance.selector,
-            MIN_STAKE + 1,
-            MIN_STAKE
-        ));
+        vm.expectRevert(
+            abi.encodeWithSelector(StakingContract.InsufficientStakedBalance.selector, MIN_STAKE + 1, MIN_STAKE)
+        );
 
         staking.unstake(MIN_STAKE + 1);
         vm.stopPrank();
@@ -173,7 +201,7 @@ contract StakingContractTest is Test {
 
         token.approve(address(staking), MIN_STAKE);
         staking.stake(MIN_STAKE);
-        vm.expectRevert(StakingContract.StakingPeriodNotMet.selector); 
+        vm.expectRevert(StakingContract.StakingPeriodNotMet.selector);
 
         staking.unstake(MIN_STAKE);
         vm.stopPrank();
@@ -209,9 +237,8 @@ contract StakingContractTest is Test {
         assertEq(lastStakeTimeOf(user1), 0);
         assertEq(staking.totalStaked(), 0);
 
-
         uint256 user1Received = token.balanceOf(user1);
-      
+
         assertEq(user1Received, 500_000 ether - MIN_STAKE + MIN_STAKE);
         assertEq(rewardBalanceOf(user1), pendingBefore + pendingSecond);
         vm.stopPrank();
@@ -350,7 +377,7 @@ contract StakingContractTest is Test {
         assertEq(staking.stakingPeriod(), 10 days);
     }
 
-    function test_EmergencyWithdraw_NoExcess_RevertsNoExcessTokens() public {
+    function test_EmergencyWithdraw_RequiresPaused_And_Owner() public {
         // Seed staking contract with tokens: user1 stakes
         vm.startPrank(user1);
 
@@ -367,11 +394,18 @@ contract StakingContractTest is Test {
         vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", user1));
         staking.emergencyWithdraw();
 
-        // owner schedules; with no excess, calling should revert
+        // while unpaused, initiating should revert due to whenPaused
+        vm.expectRevert();
+        staking.initiateEmergencyWithdraw();
+
+        // pause, then schedule and withdraw after delay
+        staking.pause();
         staking.initiateEmergencyWithdraw();
         vm.warp(block.timestamp + 1 days);
-        vm.expectRevert(StakingContract.NoExcessTokens.selector);
+        uint256 ownerBefore2 = token.balanceOf(owner);
         staking.emergencyWithdraw();
+        assertEq(token.balanceOf(address(staking)), 0);
+        assertEq(token.balanceOf(owner), ownerBefore2 + contractBal);
     }
 
     // ------------------------------------------------------
@@ -386,7 +420,7 @@ contract StakingContractTest is Test {
 
         vm.stopPrank();
 
-        // Use a very long period 
+        // Use a very long period
         uint256 T = 50 * 365 days;
         // Bounding the reward rate such that staked * rate * T fits in uint256
         uint256 denom = MIN_STAKE * T;
@@ -409,7 +443,7 @@ contract StakingContractTest is Test {
 
         token.approve(address(staking), MIN_STAKE);
         staking.stake(MIN_STAKE);
-         
+
         vm.stopPrank();
 
         uint256 T = 50 * 365 days;
@@ -635,11 +669,9 @@ contract StakingContractTest is Test {
         vm.warp(block.timestamp + t4);
 
         // Expected piecewise rewards
-        uint256 expected12 = (MIN_STAKE * r1 * t1) / 1e18
-            + (MIN_STAKE * r2 * t2) / 1e18;
+        uint256 expected12 = (MIN_STAKE * r1 * t1) / 1e18 + (MIN_STAKE * r2 * t2) / 1e18;
         uint256 postRestakeBal = 3 * MIN_STAKE;
-        uint256 expected34 = (postRestakeBal * r2 * t3) / 1e18
-            + (postRestakeBal * r3 * t4) / 1e18;
+        uint256 expected34 = (postRestakeBal * r2 * t3) / 1e18 + (postRestakeBal * r3 * t4) / 1e18;
         uint256 expected = expected12 + expected34;
 
         // Ensure sufficient liquidity
@@ -726,13 +758,8 @@ contract StakingContractTest is Test {
         assertEq(staking.calculateRewards(user1), 0);
         vm.stopPrank();
     }
-    
-    function testFuzz_Restake_MultiSegmentAccrual(
-        uint128 a1Raw,
-        uint128 a2Raw,
-        uint64 t1Raw,
-        uint64 t2Raw
-    ) public {
+
+    function testFuzz_Restake_MultiSegmentAccrual(uint128 a1Raw, uint128 a2Raw, uint64 t1Raw, uint64 t2Raw) public {
         uint256 user1Bal = token.balanceOf(user1);
         // ensure room for two stakes
         uint256 a1 = bound(uint256(a1Raw), MIN_STAKE, user1Bal - MIN_STAKE);
@@ -786,12 +813,9 @@ contract StakingContractTest is Test {
         assertEq(stakeBalance(user1) + stakeBalance(user2), staking.totalStaked());
     }
 
-    function testFuzz_UpdateRewardRate_Segmented(
-        uint128 amountRaw,
-        uint64 t1Raw,
-        uint64 t2Raw,
-        uint64 newRateRaw
-    ) public {
+    function testFuzz_UpdateRewardRate_Segmented(uint128 amountRaw, uint64 t1Raw, uint64 t2Raw, uint64 newRateRaw)
+        public
+    {
         uint256 amount = bound(uint256(amountRaw), MIN_STAKE, token.balanceOf(user1));
         // keep times and new rate modest to avoid exhausting the reward pool
         uint256 t1 = uint256(bound(t1Raw, 1, 3 days));
@@ -807,7 +831,7 @@ contract StakingContractTest is Test {
 
         uint256 before1 = token.balanceOf(user1);
         uint256 expected1 = (amount * staking.rewardRate() * t1) / 1e18;
-   
+
         {
             uint256 reserve = staking.rewardReserve();
             if (reserve < expected1) {
@@ -924,7 +948,7 @@ contract StakingContractTest is Test {
         vm.stopPrank();
     }
 
-    function testFuzz_EmergencyWithdraw_NoExcess_Reverts_AndOperationsContinue(uint128 a1Raw, uint128 a2Raw) public {
+    function testFuzz_EmergencyWithdraw_Attempt_Reverts_AndOperationsContinue(uint128 a1Raw, uint128 a2Raw) public {
         uint256 a1 = bound(uint256(a1Raw), MIN_STAKE, token.balanceOf(user1));
         uint256 a2 = bound(uint256(a2Raw), MIN_STAKE, token.balanceOf(user2));
 
@@ -942,10 +966,12 @@ contract StakingContractTest is Test {
 
         vm.stopPrank();
 
+        // initiating while unpaused must revert due to whenPaused
+        vm.expectRevert();
         staking.initiateEmergencyWithdraw();
         vm.warp(block.timestamp + 1 days);
 
-        vm.expectRevert(StakingContract.NoExcessTokens.selector);
+        vm.expectRevert();
         staking.emergencyWithdraw();
 
         // After no-op, operations should still work
@@ -980,11 +1006,7 @@ contract StakingContractTest is Test {
         vm.stopPrank();
     }
 
-    function testFuzz_CalculateRewards_Monotonic(
-        uint128 amountRaw,
-        uint64 t1Raw,
-        uint64 t2Raw
-    ) public {
+    function testFuzz_CalculateRewards_Monotonic(uint128 amountRaw, uint64 t1Raw, uint64 t2Raw) public {
         uint256 amount = bound(uint256(amountRaw), MIN_STAKE, token.balanceOf(user1));
         uint256 t1 = uint256(bound(t1Raw, 1, 7 days));
         uint256 t2 = uint256(bound(t2Raw, t1, t1 + 7 days));
@@ -1028,7 +1050,7 @@ contract StakingContractTest is Test {
         vm.stopPrank();
     }
 
-    function test_Claim_AfterEmergencyWithdraw_NoExcess_StillWorks() public {
+    function test_Claim_AfterEmergencyWithdraw_Attempt_StillWorks() public {
         vm.startPrank(user1);
 
         token.approve(address(staking), MIN_STAKE);
@@ -1038,12 +1060,12 @@ contract StakingContractTest is Test {
 
         vm.stopPrank();
 
-        // Owner schedules emergency withdraw and waits for timelock
+        // Not paused:
+        // initiating schedule should revert due to whenPaused
+        vm.expectRevert();
         staking.initiateEmergencyWithdraw();
-        vm.warp(block.timestamp + 1 days);
-
-        // No excess -> call reverts
-        vm.expectRevert(StakingContract.NoExcessTokens.selector);
+        // and calling emergencyWithdraw should also revert due to pause requirement
+        vm.expectRevert();
         staking.emergencyWithdraw();
 
         vm.startPrank(user1);
@@ -1057,11 +1079,7 @@ contract StakingContractTest is Test {
 
     function test_Stake_Revert_WhenTransferFromReturnsFalse_Mocked() public {
         // Make any transferFrom call return false
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(IERC20.transferFrom.selector),
-            abi.encode(false)
-        );
+        vm.mockCall(address(token), abi.encodeWithSelector(IERC20.transferFrom.selector), abi.encode(false));
 
         vm.startPrank(user1);
         token.approve(address(staking), MIN_STAKE);
@@ -1081,11 +1099,7 @@ contract StakingContractTest is Test {
         vm.warp(block.timestamp + STAKE_PERIOD);
 
         // Make any transfer call return false
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(IERC20.transfer.selector),
-            abi.encode(false)
-        );
+        vm.mockCall(address(token), abi.encodeWithSelector(IERC20.transfer.selector), abi.encode(false));
 
         vm.startPrank(user1);
 
@@ -1106,11 +1120,7 @@ contract StakingContractTest is Test {
         vm.stopPrank();
 
         // Force transfer false
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(IERC20.transfer.selector),
-            abi.encode(false)
-        );
+        vm.mockCall(address(token), abi.encodeWithSelector(IERC20.transfer.selector), abi.encode(false));
 
         vm.startPrank(user1);
 
@@ -1125,15 +1135,12 @@ contract StakingContractTest is Test {
         assertGt(token.balanceOf(address(staking)), 0);
 
         // Schedule and wait for timelock to ensure we test the transfer path
+        staking.pause();
         staking.initiateEmergencyWithdraw();
         vm.warp(block.timestamp + 1 days);
 
         // Force transfer false for owner payout
-        vm.mockCall(
-            address(token),
-            abi.encodeWithSelector(IERC20.transfer.selector),
-            abi.encode(false)
-        );
+        vm.mockCall(address(token), abi.encodeWithSelector(IERC20.transfer.selector), abi.encode(false));
 
         vm.expectRevert();
         staking.emergencyWithdraw();
@@ -1143,30 +1150,43 @@ contract StakingContractTest is Test {
     // Timelock tests for emergencyWithdraw
     // ------------------------------------------------------
     function test_Revert_EmergencyWithdraw_BeforeSchedule() public {
-        vm.expectRevert(StakingContract.StakingPeriodNotMet.selector);
+        staking.pause();
+        vm.expectRevert(StakingContract.TimelockNotElapsed.selector);
         staking.emergencyWithdraw();
     }
 
     function test_InitiateEmergencyWithdraw_SetsAvailableAt_AndEmits() public {
+        // must be paused to initiate
+        staking.pause();
         uint256 expected = block.timestamp + 1 days;
 
         vm.expectEmit(false, false, false, true, address(staking));
         emit StakingContract.EmergencyWithdrawScheduled(expected);
-
         staking.initiateEmergencyWithdraw();
         assertEq(staking.emergencyWithdrawAvailableAt(), expected);
     }
 
     function test_Revert_EmergencyWithdraw_BeforeDelayElapsed() public {
+        staking.pause();
         staking.initiateEmergencyWithdraw();
         // Advance less than delay
         vm.warp(block.timestamp + 1 days - 1);
-        
-        vm.expectRevert(StakingContract.StakingPeriodNotMet.selector);
+
+        vm.expectRevert(StakingContract.TimelockNotElapsed.selector);
         staking.emergencyWithdraw();
     }
 
-    function test_EmergencyWithdraw_AfterDelay_TransfersOnlyExcess_AndResetsSchedule() public {
+    function test_Revert_InitiateEmergencyWithdraw_WhileTimelockPending() public {
+        // must be paused to initiate
+        staking.pause();
+        // first schedule succeeds
+        staking.initiateEmergencyWithdraw();
+        // second schedule while pending should revert
+        vm.expectRevert(StakingContract.TimelockNotElapsed.selector);
+        staking.initiateEmergencyWithdraw();
+    }
+
+    function test_EmergencyWithdraw_AfterDelay_TransfersAll_AndResetsSchedule() public {
         uint256 dust = 123 ether;
 
         vm.startPrank(user1);
@@ -1175,10 +1195,10 @@ contract StakingContractTest is Test {
         assertEq(success, true);
 
         vm.stopPrank();
-        uint256 accountedBefore = staking.contractBalance();
         uint256 balanceBefore = token.balanceOf(address(staking));
-        assertEq(balanceBefore, accountedBefore + dust);
+        assertGt(balanceBefore, 0);
 
+        staking.pause();
         staking.initiateEmergencyWithdraw();
         vm.warp(block.timestamp + 1 days);
 
@@ -1186,10 +1206,10 @@ contract StakingContractTest is Test {
         staking.emergencyWithdraw();
 
         assertEq(staking.emergencyWithdrawAvailableAt(), 0);
-        assertEq(token.balanceOf(address(staking)), balanceBefore - dust);
-        assertEq(token.balanceOf(owner), ownerBefore + dust);
+        assertEq(token.balanceOf(address(staking)), 0);
+        assertEq(token.balanceOf(owner), ownerBefore + balanceBefore);
         // accounted balances unchanged
-        assertEq(staking.contractBalance(), accountedBefore);
+        assertEq(staking.contractBalance(), staking.totalStaked() + staking.rewardReserve());
     }
 
     function test_FundRewardReserve_IncreasesReserve_AndTransfers() public {
@@ -1250,10 +1270,9 @@ contract StakingContractTest is Test {
     function test_Revert_WithdrawFromRewardReserve_Insufficient() public {
         uint256 insuff = staking.rewardReserve() + 1;
 
-        vm.expectRevert(abi.encodeWithSelector(
-            StakingContract.InsufficientRewardReserve.selector,
-            insuff, staking.rewardReserve()
-        ));
+        vm.expectRevert(
+            abi.encodeWithSelector(StakingContract.InsufficientRewardReserve.selector, insuff, staking.rewardReserve())
+        );
 
         staking.withdrawFromRewardReserve(insuff, owner);
     }
@@ -1292,7 +1311,6 @@ contract StakingContractTest is Test {
         if (reserve > 0) {
             staking.withdrawFromRewardReserve(reserve, owner);
         }
-
 
         vm.startPrank(user1);
 
@@ -1347,6 +1365,72 @@ contract StakingContractTest is Test {
     function test_Revert_WithdrawExcessTokens_ZeroTo() public {
         vm.expectRevert(StakingContract.ZeroAddress.selector);
         staking.withdrawExcessTokens(1, address(0));
+    }
+
+    // ------------------------------------------------------
+    // Upgradability
+    // ------------------------------------------------------
+    function test_UpgradeProxy_To_V2_And_Call_Version() public {
+        // deploy new implementation and upgrade proxy
+        StakingContractV2 v2 = new StakingContractV2();
+        UnsafeUpgrades.upgradeProxy(address(staking), address(v2), "");
+
+        // call new function via proxy
+        uint256 ver = StakingContractV2(address(staking)).version();
+        assertEq(ver, 2);
+    }
+
+    // ------------------------------------------------------
+    // Pausability and emergency withdraw mode
+    // ------------------------------------------------------
+    function test_Pause_Blocks_Stake_Unstake_Claim() public {
+        // prepare a stake
+        vm.startPrank(user1);
+        token.approve(address(staking), MIN_STAKE);
+        staking.stake(MIN_STAKE);
+        vm.stopPrank();
+
+        staking.pause();
+
+        // stake blocked
+        vm.startPrank(user1);
+        vm.expectRevert();
+        staking.stake(MIN_STAKE);
+        vm.stopPrank();
+
+        // unstake blocked
+        vm.startPrank(user1);
+        vm.expectRevert();
+        staking.unstake(MIN_STAKE);
+        vm.stopPrank();
+
+        // claim blocked
+        vm.expectRevert();
+        staking.claimRewards();
+    }
+
+    function test_EmergencyUnstake_RequiresEnabled_Then_Works() public {
+        // user stakes
+        vm.startPrank(user1);
+        token.approve(address(staking), MIN_STAKE);
+        staking.stake(MIN_STAKE);
+        vm.stopPrank();
+
+        // paused but not enabled -> revert
+        staking.pause();
+        vm.startPrank(user1);
+        vm.expectRevert();
+        staking.emergencyUnstake(MIN_STAKE / 2);
+        vm.stopPrank();
+
+        // enable and then works
+        staking.setEmergencyWithdrawalsEnabled(true);
+        vm.startPrank(user1);
+        uint256 balBefore = token.balanceOf(user1);
+        staking.emergencyUnstake(MIN_STAKE / 2);
+        assertEq(token.balanceOf(user1) - balBefore, MIN_STAKE / 2);
+        assertEq(stakeBalance(user1), MIN_STAKE / 2);
+        vm.stopPrank();
     }
 }
 

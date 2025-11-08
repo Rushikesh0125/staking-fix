@@ -10,7 +10,6 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * @notice This does not includes improvements only placeholders are implemented.
  */
 contract StakingContractInitial {
-
     using SafeERC20 for IERC20;
 
     IERC20 public immutable STAKING_TOKEN;
@@ -21,24 +20,24 @@ contract StakingContractInitial {
     mapping(address => uint256) public rewardBalances;
     mapping(address => uint256) public lastStakeTime;
     mapping(address => bool) public isStaking;
-    
+
     uint256 public totalStaked;
     uint256 public rewardRate; // rewards per second per token
     uint256 public minimumStakeAmount;
     uint256 public stakingPeriod; // minimum staking period in seconds
     address public owner;
-    
+
     // Events
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
     event RewardsClaimed(address indexed user, uint256 amount);
     event RewardRateUpdated(uint256 newRate);
-    
+
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
         _;
     }
-    
+
     constructor(uint256 _rewardRate, uint256 _minimumStakeAmount, uint256 _stakingPeriod, address _token) {
         // audit - no data validation checks for the parameters
         owner = msg.sender;
@@ -47,7 +46,7 @@ contract StakingContractInitial {
         stakingPeriod = _stakingPeriod;
         STAKING_TOKEN = IERC20(_token);
     }
-    
+
     /**
      * @dev Stake tokens in the contract
      * @param amount Amount of tokens to stake
@@ -57,7 +56,7 @@ contract StakingContractInitial {
         // audit - require statements with string reasons are expensive, consider using custom errors instead
         require(amount >= minimumStakeAmount, "Amount too low");
         require(amount > 0, "Amount must be positive");
-        
+
         // audit - adding transferFrom call here would introduce a reentrancy vulnerability
         // Transfer tokens from user (assuming ERC20 token)
         // NOTE: This is a placeholder - in real implementation, you'd use IERC20.transferFrom
@@ -75,13 +74,13 @@ contract StakingContractInitial {
             isStaking[msg.sender] = true;
             lastStakeTime[msg.sender] = block.timestamp;
         }
-        
+
         stakedBalances[msg.sender] += amount;
         totalStaked += amount;
-        
+
         emit Staked(msg.sender, amount);
     }
-    
+
     /**
      * @dev Unstake tokens from the contract
      * @param amount Amount of tokens to unstake
@@ -91,15 +90,15 @@ contract StakingContractInitial {
         require(isStaking[msg.sender], "Not staking");
         require(stakedBalances[msg.sender] >= amount, "Insufficient staked balance");
         require(block.timestamp >= lastStakeTime[msg.sender] + stakingPeriod, "Staking period not met");
-        
+
         // Calculate and add pending rewards
         uint256 pendingRewards = calculateRewards(msg.sender);
         rewardBalances[msg.sender] += pendingRewards;
-        
+
         // Update balances
         stakedBalances[msg.sender] -= amount;
         totalStaked -= amount;
-        
+
         // Reset if fully unstaked
         if (stakedBalances[msg.sender] == 0) {
             isStaking[msg.sender] = false;
@@ -107,13 +106,13 @@ contract StakingContractInitial {
         } else {
             lastStakeTime[msg.sender] = block.timestamp;
         }
-        
+
         // Transfer tokens back to user
         // NOTE: This is a placeholder - in real implementation, you'd use IERC20.transfer
         STAKING_TOKEN.safeTransfer(msg.sender, amount);
         emit Unstaked(msg.sender, amount);
     }
-    
+
     /**
      * @dev Claim accumulated rewards
      */
@@ -121,22 +120,22 @@ contract StakingContractInitial {
         // audit - This check blocks user from claiming unclaimed reward balances
         // it could be - require(isStaking[msg.sender] || rewardBalances[msg.sender] > 0, "Not staking");
         require(isStaking[msg.sender], "Not staking");
-        
+
         uint256 pendingRewards = calculateRewards(msg.sender);
         uint256 totalRewards = rewardBalances[msg.sender] + pendingRewards;
-        
+
         require(totalRewards > 0, "No rewards to claim");
-        
+
         // Reset reward balance and update stake time
         rewardBalances[msg.sender] = 0;
         lastStakeTime[msg.sender] = block.timestamp;
-        
+
         // Transfer rewards to user
         // NOTE: This is a placeholder - in real implementation, you'd use IERC20.transfer
         STAKING_TOKEN.safeTransfer(msg.sender, totalRewards);
         emit RewardsClaimed(msg.sender, totalRewards);
     }
-    
+
     /**
      * @dev Calculate pending rewards for a user
      * @param user Address of the user
@@ -146,11 +145,11 @@ contract StakingContractInitial {
         if (!isStaking[user] || stakedBalances[user] == 0) {
             return 0;
         }
-        
+
         uint256 timeStaked = block.timestamp - lastStakeTime[user];
         return (stakedBalances[user] * rewardRate * timeStaked) / 1e18;
     }
-    
+
     /**
      * @dev Get total rewards for a user (pending + claimed)
      * @param user Address of the user
@@ -159,7 +158,7 @@ contract StakingContractInitial {
     function getTotalRewards(address user) external view returns (uint256) {
         return rewardBalances[user] + calculateRewards(user);
     }
-    
+
     /**
      * @dev Update reward rate (owner only)
      * @param newRate New reward rate
@@ -171,7 +170,7 @@ contract StakingContractInitial {
         // consider adding a snapshot history of reward rates and their changes to calculate rewards accurately
         emit RewardRateUpdated(newRate);
     }
-    
+
     /**
      * @dev Update minimum stake amount (owner only)
      * @param newMinimum New minimum stake amount
@@ -180,7 +179,7 @@ contract StakingContractInitial {
         // audit - no data validation checks for the new minimum stake amount
         minimumStakeAmount = newMinimum;
     }
-    
+
     /**
      * @dev Update staking period (owner only)
      * @param newPeriod New staking period in seconds
@@ -189,7 +188,7 @@ contract StakingContractInitial {
         // audit - no data validation checks for the new staking period
         stakingPeriod = newPeriod;
     }
-    
+
     /**
      * @dev Emergency withdraw function (owner only)
      * NOTE: This function has potential security issues - identify and fix them

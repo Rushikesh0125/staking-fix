@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 import {Test, StdInvariant} from "forge-std/Test.sol";
 import {StakingContract} from "../../src/StakingContract.sol";
 import {MockERC20} from "../../src/MockERC20.sol";
+import {UnsafeUpgrades} from "openzeppelin-foundry-upgrades/Upgrades.sol";
 
 contract TotalStakedHandler is Test {
     StakingContract internal staking;
@@ -63,7 +64,16 @@ contract TotalStakedInvariant is StdInvariant {
     function setUp() public {
         // Deploy token and staking
         token = new MockERC20();
-        staking = new StakingContract(REWARD_RATE, MIN_STAKE, STAKE_PERIOD, address(token));
+        {
+            address implementation = address(new StakingContract());
+            address proxy = UnsafeUpgrades.deployUUPSProxy(
+                implementation,
+                abi.encodeCall(
+                    StakingContract.initialize, (REWARD_RATE, MIN_STAKE, STAKE_PERIOD, address(token), address(this))
+                )
+            );
+            staking = StakingContract(proxy);
+        }
 
         // Prepare a set of actors
         address[] memory actors = new address[](10);
@@ -90,7 +100,7 @@ contract TotalStakedInvariant is StdInvariant {
     }
 
     // Invariant: totalStaked equals the sum of all individual stake balances
-    function invariant_totalStakedEqualsSumOfBalances() public view{
+    function invariant_totalStakedEqualsSumOfBalances() public view {
         // Sum over all addresses that the handler can manipulate
         uint256 sum;
         // Retrieve actors from handler by reading storage layout
@@ -104,5 +114,4 @@ contract TotalStakedInvariant is StdInvariant {
         require(staking.totalStaked() == sum, "totalStaked must equal sum of individual balances");
     }
 }
-
 
