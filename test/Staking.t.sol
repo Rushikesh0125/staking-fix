@@ -6,6 +6,11 @@ import {StakingContract} from "../src/StakingContract.sol";
 import {MockERC20} from "../src/MockERC20.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
+// Minimal token with no decimals() implementation to trigger the constructor catch branch
+contract NoDecimalsToken {
+    // intentionally empty; no IERC20Metadata.decimals()
+}
+
 contract StakingContractTest is Test {
     // Actors
     address internal owner;
@@ -86,6 +91,12 @@ contract StakingContractTest is Test {
 
         vm.expectRevert(StakingContract.ZeroAddress.selector);
         new StakingContract(REWARD_RATE, MIN_STAKE, STAKE_PERIOD, address(0));
+    }
+
+    function test_REWARD_SCALE_Fallback_WhenNoDecimals() public {
+        address tokenAddr = address(new NoDecimalsToken());
+        StakingContract s = new StakingContract(1, 1, 1, tokenAddr);
+        assertEq(s.REWARD_SCALE(), 1e18);
     }
 
     // ------------------------------------------------------
